@@ -1,14 +1,35 @@
 import os
 import pickle
 import numpy as np
-from datetime import datetime
+from datetime import datetime, date
 from flask import Flask, request, jsonify
 import requests
 import cv2
 from PIL import Image
 import tempfile
+import shutil
+from functools import wraps
+from dotenv import load_dotenv
 
+load_dotenv()
 app = Flask(__name__)
+
+# Load auth key from environment
+AUTH_KEY = os.getenv('auth_key')
+
+def require_auth(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        auth_header = request.headers.get('Authorization')
+        if not auth_header or not auth_header.startswith('Bearer '):
+            return jsonify({'error': 'Unauthenticated'}), 401
+        
+        token = auth_header.split(' ')[1]
+        if token != AUTH_KEY:
+            return jsonify({'error': 'Unauthenticated'}), 401
+        
+        return f(*args, **kwargs)
+    return decorated_function
 
 # Load OpenCV face detector
 face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
@@ -35,11 +56,20 @@ def get_face_embedding(image_path):
     return None
 
 def save_embedding(embedding, image_url, file_id, expiry_date, album_id):
-    """Save embedding to file system"""
-    folder_path = os.path.join('data', expiry_date, album_id)
+    """Save embedding to album file"""
+    folder_path = os.path.join('data', expiry_date)
     os.makedirs(folder_path, exist_ok=True)
     
-    data = {
+    file_path = os.path.join(folder_path, f"{album_id}.pkl")
+    
+    # Load existing album data or create new
+    album_data = []
+    if os.path.exists(file_path):
+        with open(file_path, 'rb') as f:
+            album_data = pickle.load(f)
+    
+    # Add new face data
+    face_data = {
         'id': file_id,
         'image_url': image_url,
         'embedding': embedding.tolist(),
@@ -47,42 +77,45 @@ def save_embedding(embedding, image_url, file_id, expiry_date, album_id):
         'expiry_date': expiry_date
     }
     
-    file_path = os.path.join(folder_path, f"{file_id}.pkl")
+    # Remove existing entry with same id if exists
+    album_data = [item for item in album_data if item['id'] != file_id]
+    album_data.append(face_data)
+    
+    # Save updated album
     with open(file_path, 'wb') as f:
-        pickle.dump(data, f)
+        pickle.dump(album_data, f)
 
 def search_similar_faces(query_embedding, album_id, expiry_date):
-    """Search for similar faces in specific expiry/album folder"""
+    """Search for similar faces in album file"""
     results = []
-    folder_path = os.path.join('data', expiry_date, album_id)
+    file_path = os.path.join('data', expiry_date, f"{album_id}.pkl")
     
-    if os.path.exists(folder_path):
-        for file in os.listdir(folder_path):
-            if file.endswith('.pkl'):
-                file_path = os.path.join(folder_path, file)
-                try:
-                    with open(file_path, 'rb') as f:
-                        data = pickle.load(f)
-                    
-                    stored_embedding = np.array(data['embedding'])
-                    # Calculate similarity using cosine similarity
-                    dot_product = np.dot(query_embedding, stored_embedding)
-                    norm_a = np.linalg.norm(query_embedding)
-                    norm_b = np.linalg.norm(stored_embedding)
-                    similarity = dot_product / (norm_a * norm_b)
-                    
-                    if similarity > 0.3:  # Lower threshold
-                        results.append({
-                            'image_url': data['image_url'],
-                            'similarity': float(similarity),
-                            'id': data['id']
-                        })
-                except:
-                    continue
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, 'rb') as f:
+                album_data = pickle.load(f)
+            
+            for face_data in album_data:
+                stored_embedding = np.array(face_data['embedding'])
+                # Calculate similarity using cosine similarity
+                dot_product = np.dot(query_embedding, stored_embedding)
+                norm_a = np.linalg.norm(query_embedding)
+                norm_b = np.linalg.norm(stored_embedding)
+                similarity = dot_product / (norm_a * norm_b)
+                
+                if similarity > 0.3:  # Lower threshold
+                    results.append({
+                        'image_url': face_data['image_url'],
+                        'similarity': float(similarity),
+                        'id': face_data['id']
+                    })
+        except:
+            pass
     
     return sorted(results, key=lambda x: x['similarity'], reverse=True)
 
 @app.route('/submit', methods=['POST'])
+@require_auth
 def submit():
     """Submit face for storage"""
     try:
@@ -109,6 +142,7 @@ def submit():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/search', methods=['POST'])
+@require_auth
 def search():
     """Search for similar faces"""
     try:
@@ -145,10 +179,41 @@ def home():
         'endpoints': {
             'POST /submit': 'Store face embedding',
             'POST /search': 'Search similar faces',
+            'GET /clean': 'Delete expired folders',
             'GET /test': 'Health check'
         },
         'timestamp': datetime.now().isoformat()
     })
+
+@app.route('/clean', methods=['GET'])
+@require_auth
+def clean():
+    """Clean expired folders"""
+    try:
+        deleted_folders = []
+        today = date.today()
+        data_path = 'data'
+        
+        if os.path.exists(data_path):
+            for folder in os.listdir(data_path):
+                folder_path = os.path.join(data_path, folder)
+                if os.path.isdir(folder_path):
+                    try:
+                        folder_date = datetime.strptime(folder, '%Y-%m-%d').date()
+                        if folder_date < today:
+                            shutil.rmtree(folder_path)
+                            deleted_folders.append(folder)
+                    except ValueError:
+                        continue
+        
+        return jsonify({
+            'status': 'success',
+            'deleted_folders': deleted_folders,
+            'count': len(deleted_folders)
+        })
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/test', methods=['GET'])
 def test():

@@ -4,3 +4,4 @@ numpy
 requests
 pillow
 scikit-learn
+python-dotenv

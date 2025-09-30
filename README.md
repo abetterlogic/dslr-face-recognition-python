@@ -5,11 +5,21 @@ Minimal OpenCV-based face recognition system optimized for 2 CPU 8GB RAM.
 ## Setup
 
 ```bash
-pip install -r requirements.txt
+python3 -m pip install -r requirements.txt
 python3 face_api.py
 ```
 
 Server runs on `http://localhost:8080`
+
+## Authentication
+
+All API endpoints (except `/` and `/test`) require Bearer token authentication:
+
+```
+Authorization: Bearer your_secret_auth_key_here
+```
+
+Update the `auth_key` in `.env` file before starting the server.
 
 ## API Endpoints
 
@@ -17,7 +27,7 @@ Server runs on `http://localhost:8080`
 Server status and available endpoints.
 
 ### POST /submit
-Store face embedding:
+Store face embedding (requires auth):
 ```json
 {
   "id": "unique_id",
@@ -28,7 +38,7 @@ Store face embedding:
 ```
 
 ### POST /search
-Search similar faces:
+Search similar faces (requires auth):
 ```json
 {
   "image_url": "https://example.com/query.jpg",
@@ -51,6 +61,9 @@ Response:
 }
 ```
 
+### GET /clean
+Delete expired folders (requires auth).
+
 ### GET /test
 Health check endpoint.
 
@@ -58,8 +71,8 @@ Health check endpoint.
 ```
 data/
 ├── {expiry_date}/
-│   └── {album_id}/
-│       └── {id}.pkl
+│   ├── {album_id}.pkl
+│   └── {album_id2}.pkl
 ```
 
-Each .pkl file contains face embedding and metadata. The `data/` folder is git-ignored.
+Each .pkl file contains all face embeddings for that album. The `data/` folder is git-ignored.
