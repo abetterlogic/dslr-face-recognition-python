@@ -9,7 +9,7 @@ python3 -m pip install -r requirements.txt
 python3 face_api.py
 ```
 
-Server runs on `http://localhost:8080`
+Server runs on configurable port (default: 8080)
 
 ## Authentication
 
@@ -33,9 +33,25 @@ Store face embedding (requires auth):
   "id": "unique_id",
   "image_url": "https://example.com/image.jpg",
   "album_id": "album1",
-  "expiry_date": "2024-12-31"
+  "date_deletion": "2024-12-31"
 }
 ```
+
+Response:
+```json
+{
+  "status": "done",
+  "id": "unique_id",
+  "total_faces": 1
+}
+```
+
+Status values:
+- `done` - Successfully processed or ID already exists
+- `noface` - No face detected in image
+- `error` - Processing error occurred
+
+`total_faces` indicates number of faces detected in the submitted image.
 
 ### POST /search
 Search similar faces (requires auth):
@@ -43,7 +59,7 @@ Search similar faces (requires auth):
 {
   "image_url": "https://example.com/query.jpg",
   "album_id": "album1",
-  "expiry_date": "2024-12-31"
+  "date_deletion": "2024-12-31"
 }
 ```
 
@@ -70,7 +86,7 @@ Health check endpoint.
 ## File Structure
 ```
 data/
-├── {expiry_date}/
+├── {date_deletion}/
 │   ├── {album_id}.pkl
 │   └── {album_id2}.pkl
 ```

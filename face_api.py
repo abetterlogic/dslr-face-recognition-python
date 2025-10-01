@@ -14,8 +14,14 @@ from dotenv import load_dotenv
 load_dotenv()
 app = Flask(__name__)
 
-# Load auth key from environment
+@app.before_request
+def log_request_info():
+    if request.method in ['POST', 'PUT', 'PATCH']:
+        print(f"Request: {request.method} {request.path} - Payload: {request.get_json()}")
+
+# Load configuration from environment
 AUTH_KEY = os.getenv('auth_key')
+PORT = int(os.getenv('port', 8080))
 
 def require_auth(f):
     @wraps(f)
@@ -45,19 +51,22 @@ def get_face_embedding(image_path):
     """Extract simple face features using OpenCV"""
     img = cv2.imread(image_path)
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    faces = face_cascade.detectMultiScale(gray, 1.1, 4)
+    faces = face_cascade.detectMultiScale(gray, 1.05, 3, minSize=(30, 30))
     
     if len(faces) > 0:
-        x, y, w, h = faces[0]
+        # Use largest face
+        largest_face = max(faces, key=lambda f: f[2] * f[3])
+        x, y, w, h = largest_face
         face_roi = gray[y:y+h, x:x+w]
-        face_resized = cv2.resize(face_roi, (64, 64))
-        # Create simple feature vector from resized face
-        return face_resized.flatten().astype(np.float32)
-    return None
+        face_resized = cv2.resize(face_roi, (100, 100))
+        # Normalize pixel values
+        face_normalized = face_resized / 255.0
+        return face_normalized.flatten().astype(np.float32), len(faces)
+    return None, len(faces)
 
-def save_embedding(embedding, image_url, file_id, expiry_date, album_id):
+def save_embedding(embedding, image_url, file_id, date_deletion, album_id):
     """Save embedding to album file"""
-    folder_path = os.path.join('data', expiry_date)
+    folder_path = os.path.join('data', date_deletion)
     os.makedirs(folder_path, exist_ok=True)
     
     file_path = os.path.join(folder_path, f"{album_id}.pkl")
@@ -74,7 +83,7 @@ def save_embedding(embedding, image_url, file_id, expiry_date, album_id):
         'image_url': image_url,
         'embedding': embedding.tolist(),
         'album_id': album_id,
-        'expiry_date': expiry_date
+        'date_deletion': date_deletion
     }
     
     # Remove existing entry with same id if exists
@@ -84,11 +93,13 @@ def save_embedding(embedding, image_url, file_id, expiry_date, album_id):
     # Save updated album
     with open(file_path, 'wb') as f:
         pickle.dump(album_data, f)
+    
+    return len(album_data)
 
-def search_similar_faces(query_embedding, album_id, expiry_date):
+def search_similar_faces(query_embedding, album_id, date_deletion):
     """Search for similar faces in album file"""
     results = []
-    file_path = os.path.join('data', expiry_date, f"{album_id}.pkl")
+    file_path = os.path.join('data', date_deletion, f"{album_id}.pkl")
     
     if os.path.exists(file_path):
         try:
@@ -103,7 +114,7 @@ def search_similar_faces(query_embedding, album_id, expiry_date):
                 norm_b = np.linalg.norm(stored_embedding)
                 similarity = dot_product / (norm_a * norm_b)
                 
-                if similarity > 0.3:  # Lower threshold
+                if similarity > 0.1:  # Very low threshold for basic features
                     results.append({
                         'image_url': face_data['image_url'],
                         'similarity': float(similarity),
@@ -119,48 +130,64 @@ def search_similar_faces(query_embedding, album_id, expiry_date):
 def submit():
     """Submit face for storage"""
     try:
+        print(f"Submit request payload: {request.json}")
         data = request.json
         image_url = data['image_url']
         file_id = data['id']
         album_id = data['album_id']
-        expiry_date = data['expiry_date']
+        date_deletion = data['date_deletion']
+        
+        # Check if ID already exists
+        folder_path = os.path.join('data', date_deletion)
+        file_path = os.path.join(folder_path, f"{album_id}.pkl")
+        
+        current_total = 0
+        if os.path.exists(file_path):
+            with open(file_path, 'rb') as f:
+                album_data = pickle.load(f)
+            current_total = len(album_data)
+            
+            for item in album_data:
+                if item['id'] == file_id:
+                    return jsonify({'status': 'done', 'id': file_id, 'total_faces': 1})
         
         # Download and process image
         img_path = download_image(image_url)
-        embedding = get_face_embedding(img_path)
+        embedding, face_count = get_face_embedding(img_path)
         os.unlink(img_path)
         
         if embedding is None:
-            return jsonify({'error': 'No face detected'}), 400
+            return jsonify({'status': 'noface', 'id': file_id, 'total_faces': face_count})
         
         # Save embedding
-        save_embedding(embedding, image_url, file_id, expiry_date, album_id)
+        save_embedding(embedding, image_url, file_id, date_deletion, album_id)
         
-        return jsonify({'status': 'success', 'id': file_id})
+        return jsonify({'status': 'done', 'id': file_id, 'total_faces': face_count})
     
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'status': 'error', 'id': data.get('id', ''), 'total_faces': 0, 'error': str(e)}), 500
 
 @app.route('/search', methods=['POST'])
 @require_auth
 def search():
     """Search for similar faces"""
     try:
+        print(f"Search request payload: {request.json}")
         data = request.json
         image_url = data['image_url']
         album_id = data['album_id']
-        expiry_date = data['expiry_date']
+        date_deletion = data['date_deletion']
         
         # Download and process query image
         img_path = download_image(image_url)
-        query_embedding = get_face_embedding(img_path)
+        query_embedding, _ = get_face_embedding(img_path)
         os.unlink(img_path)
         
         if query_embedding is None:
-            return jsonify({'error': 'No face detected'}), 400
+            return jsonify({'matches': [], 'details': [], 'error': 'No face detected'})
         
         # Search for matches
-        results = search_similar_faces(query_embedding, album_id, expiry_date)
+        results = search_similar_faces(query_embedding, album_id, date_deletion)
         
         return jsonify({
             'matches': [r['id'] for r in results],
@@ -224,4 +251,4 @@ def test():
     })
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8080, debug=True)
+    app.run(host='0.0.0.0', port=PORT, debug=True)
