@@ -5,3 +5,5 @@ requests
 pillow
 scikit-learn
 python-dotenv
+insightface
+onnxruntime

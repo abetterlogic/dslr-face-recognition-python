@@ -10,6 +10,7 @@ import tempfile
 import shutil
 from functools import wraps
 from dotenv import load_dotenv
+import insightface
 
 load_dotenv()
 app = Flask(__name__)
@@ -22,6 +23,7 @@ def log_request_info():
 # Load configuration from environment
 AUTH_KEY = os.getenv('auth_key')
 PORT = int(os.getenv('port', 8080))
+DEBUG = os.getenv('debug', 'false').lower() == 'true'
 
 def require_auth(f):
     @wraps(f)
@@ -37,8 +39,9 @@ def require_auth(f):
         return f(*args, **kwargs)
     return decorated_function
 
-# Load OpenCV face detector
-face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+# Load ArcFace model
+face_model = insightface.app.FaceAnalysis(providers=['CPUExecutionProvider'])
+face_model.prepare(ctx_id=0, det_size=(640, 640))
 
 def download_image(url):
     """Download image from URL"""
@@ -48,21 +51,16 @@ def download_image(url):
         return tmp.name
 
 def get_face_embedding(image_path):
-    """Extract simple face features using OpenCV"""
+    """Extract ArcFace 512d embedding"""
     img = cv2.imread(image_path)
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    faces = face_cascade.detectMultiScale(gray, 1.05, 3, minSize=(30, 30))
+    faces = face_model.get(img)
     
-    if len(faces) > 0:
-        # Use largest face
-        largest_face = max(faces, key=lambda f: f[2] * f[3])
-        x, y, w, h = largest_face
-        face_roi = gray[y:y+h, x:x+w]
-        face_resized = cv2.resize(face_roi, (100, 100))
-        # Normalize pixel values
-        face_normalized = face_resized / 255.0
-        return face_normalized.flatten().astype(np.float32), len(faces)
-    return None, len(faces)
+    if faces:
+        # Use first detected face (highest confidence)
+        face = faces[0]
+        embedding = face.embedding  # 512-dimensional ArcFace embedding
+        return embedding, len(faces)
+    return None, 0
 
 def save_embedding(embedding, image_url, file_id, date_deletion, album_id):
     """Save embedding to album file"""
@@ -114,7 +112,7 @@ def search_similar_faces(query_embedding, album_id, date_deletion):
                 norm_b = np.linalg.norm(stored_embedding)
                 similarity = dot_product / (norm_a * norm_b)
                 
-                if similarity > 0.1:  # Very low threshold for basic features
+                if similarity > 0.4:  # ArcFace threshold
                     results.append({
                         'image_url': face_data['image_url'],
                         'similarity': float(similarity),
@@ -251,4 +249,4 @@ def test():
     })
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=PORT, debug=True)
+    app.run(host='0.0.0.0', port=PORT, debug=DEBUG)

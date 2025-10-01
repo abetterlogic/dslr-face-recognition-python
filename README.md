@@ -1,6 +1,6 @@
 # Face Recognition API
 
-Minimal OpenCV-based face recognition system optimized for 2 CPU 8GB RAM.
+Minimal ArcFace 512-d based face recognition system optimized for 2 CPU 8GB RAM.
 
 ## Setup
 
