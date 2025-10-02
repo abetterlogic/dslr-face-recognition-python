@@ -11,6 +11,19 @@ python3 face_api.py
 
 Server runs on configurable port (default: 8080)
 
+## Configuration
+
+Create a `.env` file with the following structure:
+```
+auth_key=your_secret_auth_key_here
+port=8080
+debug=true
+```
+
+- `auth_key` - Bearer token for API authentication
+- `port` - Server port (default: 8080)
+- `debug` - Enable/disable debug mode (true/false)
+
 ## Authentication
 
 All API endpoints (except `/` and `/test`) require Bearer token authentication:
