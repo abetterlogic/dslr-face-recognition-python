@@ -204,11 +204,94 @@ def home():
         'endpoints': {
             'POST /submit': 'Store face embedding',
             'POST /search': 'Search similar faces',
+            'POST /delete-album': 'Delete specific album',
+            'POST /delete-file': 'Delete specific file by ID',
             'GET /clean': 'Delete expired folders',
+            'GET /status': 'Data folder statistics',
+            'POST /status-album': 'Album file details',
             'GET /test': 'Health check'
         },
         'timestamp': datetime.now().isoformat()
     })
+
+@app.route('/delete-file', methods=['POST'])
+@require_auth
+def delete_file():
+    """Delete specific file by ID from album"""
+    try:
+        data = request.json
+        album_id = data['album_id']
+        file_id = data['id']
+        date_deletion = data['date_deletion']
+        
+        file_path = os.path.join('data', date_deletion, f"{album_id}.pkl")
+        
+        if os.path.exists(file_path):
+            with open(file_path, 'rb') as f:
+                album_data = pickle.load(f)
+            
+            # Find and remove the specific ID
+            original_count = len(album_data)
+            album_data = [item for item in album_data if item['id'] != file_id]
+            
+            if len(album_data) < original_count:
+                # Save updated album
+                with open(file_path, 'wb') as f:
+                    pickle.dump(album_data, f)
+                
+                return jsonify({
+                    'status': 'success',
+                    'message': f'File {file_id} deleted from album {album_id}',
+                    'id': file_id,
+                    'album_id': album_id,
+                    'remaining_files': len(album_data)
+                })
+            else:
+                return jsonify({
+                    'status': 'not_found',
+                    'message': 'File ID not found in album',
+                    'id': file_id,
+                    'album_id': album_id
+                })
+        else:
+            return jsonify({
+                'status': 'not_found',
+                'message': 'Album not found',
+                'album_id': album_id
+            })
+    
+    except Exception as e:
+        return jsonify({'status': 'error', 'error': str(e)}), 500
+
+@app.route('/delete-album', methods=['POST'])
+@require_auth
+def delete_album():
+    """Delete specific album file"""
+    try:
+        data = request.json
+        album_id = data['album_id']
+        date_deletion = data['date_deletion']
+        
+        file_path = os.path.join('data', date_deletion, f"{album_id}.pkl")
+        
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            return jsonify({
+                'status': 'success',
+                'message': f'Album {album_id} deleted',
+                'album_id': album_id,
+                'date_deletion': date_deletion
+            })
+        else:
+            return jsonify({
+                'status': 'not_found',
+                'message': 'Album not found',
+                'album_id': album_id,
+                'date_deletion': date_deletion
+            })
+    
+    except Exception as e:
+        return jsonify({'status': 'error', 'error': str(e)}), 500
 
 @app.route('/clean', methods=['GET'])
 @require_auth
@@ -235,6 +318,89 @@ def clean():
             'status': 'success',
             'deleted_folders': deleted_folders,
             'count': len(deleted_folders)
+        })
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/status-album', methods=['POST'])
+@require_auth
+def status_album():
+    """Get album file details"""
+    try:
+        data = request.json
+        album_id = data['album_id']
+        date_deletion = data['date_deletion']
+        
+        file_path = os.path.join('data', date_deletion, f"{album_id}.pkl")
+        
+        if os.path.exists(file_path):
+            with open(file_path, 'rb') as f:
+                album_data = pickle.load(f)
+            
+            # Extract id and filepath (image_url) for each entry
+            files = [{
+                'id': item['id'],
+                'filepath': item['image_url']
+            } for item in album_data]
+            
+            return jsonify({
+                'album_id': album_id,
+                'date_deletion': date_deletion,
+                'total_files': len(files),
+                'files': files
+            })
+        else:
+            return jsonify({
+                'status': 'not_found',
+                'message': 'Album not found',
+                'album_id': album_id,
+                'date_deletion': date_deletion
+            })
+    
+    except Exception as e:
+        return jsonify({'status': 'error', 'error': str(e)}), 500
+
+@app.route('/status', methods=['GET'])
+def status():
+    """Data folder statistics"""
+    try:
+        data_path = 'data'
+        total_size = 0
+        last_modified = None
+        
+        if os.path.exists(data_path):
+            for root, dirs, files in os.walk(data_path):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    file_size = os.path.getsize(file_path)
+                    total_size += file_size
+                    
+                    file_mtime = os.path.getmtime(file_path)
+                    if last_modified is None or file_mtime > last_modified:
+                        last_modified = file_mtime
+        
+        # Convert bytes to MB
+        total_size_mb = round(total_size / (1024 * 1024), 2)
+        
+        # Convert timestamp to readable format
+        last_updated = datetime.fromtimestamp(last_modified).isoformat() if last_modified else None
+        
+        # Test if face model is working
+        active = True
+        try:
+            # Quick test of face model functionality
+            face_model.prepare(ctx_id=0, det_size=(640, 640))
+        except:
+            active = False
+        
+        return jsonify({
+            'total_disk_space_mb': total_size_mb,
+            'total_disk_space_bytes': total_size,
+            'last_updated': last_updated,
+            'data_folder_exists': os.path.exists(data_path),
+            'is_debug': DEBUG,
+            'active': active
         })
     
     except Exception as e:

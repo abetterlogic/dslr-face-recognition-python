@@ -77,8 +77,70 @@ Response:
 }
 ```
 
+### POST /delete-album
+Delete specific album (requires auth):
+```json
+{
+  "album_id": "album1",
+  "date_deletion": "2024-12-31"
+}
+```
+
+### POST /delete-file
+Delete specific file by ID (requires auth):
+```json
+{
+  "album_id": "1bb85b1c-84ac-4a3b-9811-35d798bc3bb0",
+  "id": "123",
+  "date_deletion": "2025-11-27"
+}
+```
+
 ### GET /clean
 Delete expired folders (requires auth).
+
+### GET /status
+Data folder statistics:
+
+Response:
+```json
+{
+  "total_disk_space_mb": 15.67,
+  "total_disk_space_bytes": 16435200,
+  "last_updated": "2024-01-15T14:30:45.123456",
+  "data_folder_exists": true,
+  "is_debug": true,
+  "active": true
+}
+```
+
+### POST /status-album
+Album file details (requires auth):
+```json
+{
+  "album_id": "1bb85b1c-84ac-4a3b-9811-35d798bc3bb0",
+  "date_deletion": "2025-11-27"
+}
+```
+
+Response:
+```json
+{
+  "album_id": "1bb85b1c-84ac-4a3b-9811-35d798bc3bb0",
+  "date_deletion": "2025-11-27",
+  "total_files": 2,
+  "files": [
+    {
+      "id": "123",
+      "filepath": "https://example.com/image1.jpg"
+    },
+    {
+      "id": "456",
+      "filepath": "https://example.com/image2.jpg"
+    }
+  ]
+}
+```
 
 ### GET /test
 Health check endpoint.
