@@ -1,7 +1,7 @@
 import os
 import pickle
 import numpy as np
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from flask import Flask, request, jsonify
 import requests
 import cv2
@@ -11,6 +11,7 @@ import shutil
 from functools import wraps
 from dotenv import load_dotenv
 import insightface
+import pytz
 
 load_dotenv()
 app = Flask(__name__)
@@ -18,12 +19,24 @@ app = Flask(__name__)
 @app.before_request
 def log_request_info():
     if request.method in ['POST', 'PUT', 'PATCH']:
-        print(f"Request: {request.method} {request.path} - Payload: {request.get_json()}")
+        log_to_file(f"Request: {request.method} {request.path} - Payload: {request.get_json()}")
 
 # Load configuration from environment
 AUTH_KEY = os.getenv('auth_key')
 PORT = int(os.getenv('port', 8080))
 DEBUG = os.getenv('debug', 'false').lower() == 'true'
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
+LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+
+def log_to_file(message):
+    """Log message to daily log file"""
+    if DEBUG:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        kolkata_tz = pytz.timezone('Asia/Kolkata')
+        now = datetime.now(kolkata_tz)
+        log_file = os.path.join(LOG_DIR, f"{now.strftime('%Y-%m-%d')}.log")
+        with open(log_file, 'a') as f:
+            f.write(f"{now.strftime('%Y-%m-%d %H:%M:%S %Z')} - {message}\n")
 
 def require_auth(f):
     @wraps(f)
@@ -64,7 +77,7 @@ def get_face_embedding(image_path):
 
 def save_embedding(embedding, image_url, file_id, date_deletion, album_id):
     """Save embedding to album file"""
-    folder_path = os.path.join('data', date_deletion)
+    folder_path = os.path.join(DATA_DIR, date_deletion)
     os.makedirs(folder_path, exist_ok=True)
     
     file_path = os.path.join(folder_path, f"{album_id}.pkl")
@@ -97,7 +110,7 @@ def save_embedding(embedding, image_url, file_id, date_deletion, album_id):
 def search_similar_faces(query_embedding, album_id, date_deletion):
     """Search for similar faces in album file"""
     results = []
-    file_path = os.path.join('data', date_deletion, f"{album_id}.pkl")
+    file_path = os.path.join(DATA_DIR, date_deletion, f"{album_id}.pkl")
     
     if os.path.exists(file_path):
         try:
@@ -128,7 +141,6 @@ def search_similar_faces(query_embedding, album_id, date_deletion):
 def submit():
     """Submit face for storage"""
     try:
-        print(f"Submit request payload: {request.json}")
         data = request.json
         image_url = data['image_url']
         file_id = data['id']
@@ -136,7 +148,7 @@ def submit():
         date_deletion = data['date_deletion']
         
         # Check if ID already exists
-        folder_path = os.path.join('data', date_deletion)
+        folder_path = os.path.join(DATA_DIR, date_deletion)
         file_path = os.path.join(folder_path, f"{album_id}.pkl")
         
         current_total = 0
@@ -170,7 +182,6 @@ def submit():
 def search():
     """Search for similar faces"""
     try:
-        print(f"Search request payload: {request.json}")
         data = request.json
         image_url = data['image_url']
         album_id = data['album_id']
@@ -224,7 +235,7 @@ def delete_file():
         file_id = data['id']
         date_deletion = data['date_deletion']
         
-        file_path = os.path.join('data', date_deletion, f"{album_id}.pkl")
+        file_path = os.path.join(DATA_DIR, date_deletion, f"{album_id}.pkl")
         
         if os.path.exists(file_path):
             with open(file_path, 'rb') as f:
@@ -272,7 +283,7 @@ def delete_album():
         album_id = data['album_id']
         date_deletion = data['date_deletion']
         
-        file_path = os.path.join('data', date_deletion, f"{album_id}.pkl")
+        file_path = os.path.join(DATA_DIR, date_deletion, f"{album_id}.pkl")
         
         if os.path.exists(file_path):
             os.remove(file_path)
@@ -296,12 +307,15 @@ def delete_album():
 @app.route('/clean', methods=['GET'])
 @require_auth
 def clean():
-    """Clean expired folders"""
+    """Clean expired folders and old log files"""
     try:
         deleted_folders = []
+        deleted_logs = []
         today = date.today()
-        data_path = 'data'
+        three_days_ago = today - timedelta(days=3)
+        data_path = DATA_DIR
         
+        # Clean expired data folders
         if os.path.exists(data_path):
             for folder in os.listdir(data_path):
                 folder_path = os.path.join(data_path, folder)
@@ -314,10 +328,25 @@ def clean():
                     except ValueError:
                         continue
         
+        # Clean old log files
+        if os.path.exists(LOG_DIR):
+            for log_file in os.listdir(LOG_DIR):
+                if log_file.endswith('.log'):
+                    try:
+                        log_date_str = log_file.replace('.log', '')
+                        log_date = datetime.strptime(log_date_str, '%Y-%m-%d').date()
+                        if log_date < three_days_ago:
+                            log_path = os.path.join(LOG_DIR, log_file)
+                            os.remove(log_path)
+                            deleted_logs.append(log_file)
+                    except ValueError:
+                        continue
+        
         return jsonify({
             'status': 'success',
             'deleted_folders': deleted_folders,
-            'count': len(deleted_folders)
+            'deleted_logs': deleted_logs,
+            'count': len(deleted_folders) + len(deleted_logs)
         })
     
     except Exception as e:
@@ -332,7 +361,7 @@ def status_album():
         album_id = data['album_id']
         date_deletion = data['date_deletion']
         
-        file_path = os.path.join('data', date_deletion, f"{album_id}.pkl")
+        file_path = os.path.join(DATA_DIR, date_deletion, f"{album_id}.pkl")
         
         if os.path.exists(file_path):
             with open(file_path, 'rb') as f:
@@ -365,7 +394,7 @@ def status_album():
 def status():
     """Data folder statistics"""
     try:
-        data_path = 'data'
+        data_path = DATA_DIR
         total_size = 0
         last_modified = None
         

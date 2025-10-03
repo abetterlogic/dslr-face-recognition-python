@@ -110,7 +110,17 @@ Delete specific file by ID (requires auth):
 ```
 
 ### GET /clean
-Delete expired folders (requires auth).
+Delete expired folders and log files older than 3 days (requires auth).
+
+Response:
+```json
+{
+  "status": "success",
+  "deleted_folders": ["2024-01-10", "2024-01-11"],
+  "deleted_logs": ["2024-01-12.log"],
+  "count": 3
+}
+```
 
 ### GET /status
 Data folder statistics:
@@ -167,3 +177,15 @@ data/
 ```
 
 Each .pkl file contains all face embeddings for that album. The `data/` folder is git-ignored.
+
+## Logging
+
+When `debug=true` in `.env`, the API creates daily log files:
+```
+logs/
+├── 2024-01-15.log
+├── 2024-01-16.log
+└── 2024-01-17.log
+```
+
+Log files use Asia/Kolkata timezone and are automatically cleaned up after 3 days via `/clean` endpoint.
