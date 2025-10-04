@@ -92,7 +92,7 @@ def save_embedding(embedding, image_url, file_id, date_deletion, album_id):
     face_data = {
         'id': file_id,
         'image_url': image_url,
-        'embedding': embedding.tolist(),
+        'embedding': embedding,  # Store as numpy array directly
         'album_id': album_id,
         'date_deletion': date_deletion
     }
@@ -118,7 +118,7 @@ def search_similar_faces(query_embedding, album_id, date_deletion):
                 album_data = pickle.load(f)
             
             for face_data in album_data:
-                stored_embedding = np.array(face_data['embedding'])
+                stored_embedding = face_data['embedding']  # Already numpy array
                 # Calculate similarity using cosine similarity
                 dot_product = np.dot(query_embedding, stored_embedding)
                 norm_a = np.linalg.norm(query_embedding)
@@ -131,15 +131,15 @@ def search_similar_faces(query_embedding, album_id, date_deletion):
                         'similarity': float(similarity),
                         'id': face_data['id']
                     })
-        except:
-            pass
+        except Exception as e:
+            print(f"Search error: {e}")
     
     return sorted(results, key=lambda x: x['similarity'], reverse=True)
 
 @app.route('/submit', methods=['POST'])
 @require_auth
 def submit():
-    """Submit face for storage"""
+    """Submit all faces in image for storage"""
     try:
         data = request.json
         image_url = data['image_url']
@@ -151,28 +151,33 @@ def submit():
         folder_path = os.path.join(DATA_DIR, date_deletion)
         file_path = os.path.join(folder_path, f"{album_id}.pkl")
         
-        current_total = 0
         if os.path.exists(file_path):
             with open(file_path, 'rb') as f:
                 album_data = pickle.load(f)
-            current_total = len(album_data)
             
-            for item in album_data:
-                if item['id'] == file_id:
-                    return jsonify({'status': 'done', 'id': file_id, 'total_faces': 1})
+            # Check if any face with this ID exists
+            existing_faces = [item for item in album_data if item['id'].startswith(file_id)]
+            if existing_faces:
+                return jsonify({'status': 'done', 'id': file_id, 'total_faces': len(existing_faces)})
         
-        # Download and process image
+        # Download and process image - get all faces
         img_path = download_image(image_url)
-        embedding, face_count = get_face_embedding(img_path)
+        img = cv2.imread(img_path)
+        faces = face_model.get(img) if face_model else []
         os.unlink(img_path)
         
-        if embedding is None:
-            return jsonify({'status': 'noface', 'id': file_id, 'total_faces': face_count})
+        if not faces:
+            return jsonify({'status': 'noface', 'id': file_id, 'total_faces': 0})
         
-        # Save embedding
-        save_embedding(embedding, image_url, file_id, date_deletion, album_id)
+        # Save all faces with sub-IDs
+        saved_count = 0
+        for i, face in enumerate(faces):
+            face_id = f"{file_id}_face{i+1}" if len(faces) > 1 else file_id
+            embedding = face.embedding
+            save_embedding(embedding, image_url, face_id, date_deletion, album_id)
+            saved_count += 1
         
-        return jsonify({'status': 'done', 'id': file_id, 'total_faces': face_count})
+        return jsonify({'status': 'done', 'id': file_id, 'total_faces': saved_count})
     
     except Exception as e:
         return jsonify({'status': 'error', 'id': data.get('id', ''), 'total_faces': 0, 'error': str(e)}), 500
@@ -180,31 +185,110 @@ def submit():
 @app.route('/search', methods=['POST'])
 @require_auth
 def search():
-    """Search for similar faces"""
+    """Search for similar faces using all faces in query image"""
     try:
         data = request.json
         image_url = data['image_url']
         album_id = data['album_id']
         date_deletion = data['date_deletion']
         
-        # Download and process query image
+        # Download and process query image - get all faces
         img_path = download_image(image_url)
-        query_embedding, _ = get_face_embedding(img_path)
+        img = cv2.imread(img_path)
+        faces = face_model.get(img) if face_model else []
         os.unlink(img_path)
         
-        if query_embedding is None:
+        if not faces:
             return jsonify({'matches': [], 'details': [], 'error': 'No face detected'})
         
-        # Search for matches
-        results = search_similar_faces(query_embedding, album_id, date_deletion)
+        # Search using all faces in query image
+        all_results = {}
+        for face in faces:
+            query_embedding = face.embedding
+            results = search_similar_faces(query_embedding, album_id, date_deletion)
+            
+            # Merge results, keeping best similarity for each ID
+            for result in results:
+                face_id = result['id']
+                # Extract original photo ID (remove _face suffix)
+                photo_id = face_id.split('_face')[0]
+                result['original_id'] = photo_id
+                
+                if photo_id not in all_results or result['similarity'] > all_results[photo_id]['similarity']:
+                    all_results[photo_id] = result
+        
+        # Convert to list and sort by similarity
+        final_results = sorted(all_results.values(), key=lambda x: x['similarity'], reverse=True)
+        
+        # Debug info
+        file_path = os.path.join(DATA_DIR, date_deletion, f"{album_id}.pkl")
+        stored_faces_count = 0
+        if os.path.exists(file_path):
+            with open(file_path, 'rb') as f:
+                album_data = pickle.load(f)
+            stored_faces_count = len(album_data)
         
         return jsonify({
-            'matches': [r['id'] for r in results],
-            'details': results
+            'matches': [r['original_id'] for r in final_results],
+            'details': final_results
         })
     
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.route('/match', methods=['POST'])
+@require_auth
+def match():
+    """Match selfie face with all faces in photo"""
+    try:
+        data = request.json
+        photo_url = data['photo']
+        selfie_url = data['selfie']
+        
+        # Download and process selfie
+        selfie_path = download_image(selfie_url)
+        selfie_embedding, selfie_faces = get_face_embedding(selfie_path)
+        os.unlink(selfie_path)
+        
+        if selfie_embedding is None:
+            return jsonify({'match': False, 'error': 'No face detected in selfie'})
+        
+        # Download and process photo - get all faces
+        photo_path = download_image(photo_url)
+        img = cv2.imread(photo_path)
+        faces = face_model.get(img) if face_model else []
+        os.unlink(photo_path)
+        
+        if not faces:
+            return jsonify({'match': False, 'error': 'No face detected in photo'})
+        
+        # Compare selfie against all faces in photo
+        best_similarity = -1
+        for face in faces:
+            photo_embedding = face.embedding
+            
+            # Calculate similarity
+            dot_product = np.dot(photo_embedding, selfie_embedding)
+            norm_a = np.linalg.norm(photo_embedding)
+            norm_b = np.linalg.norm(selfie_embedding)
+            similarity = dot_product / (norm_a * norm_b)
+            
+            if similarity > best_similarity:
+                best_similarity = similarity
+        
+        # Return match based on best similarity
+        is_match = bool(best_similarity > 0.4)
+        
+        return jsonify({
+            'match': is_match,
+            'similarity': float(best_similarity),
+            'threshold': 0.4,
+            'photo_faces': len(faces),
+            'selfie_faces': selfie_faces
+        })
+    
+    except Exception as e:
+        return jsonify({'match': False, 'error': str(e)}), 500
 
 @app.route('/', methods=['GET'])
 def home():
@@ -215,6 +299,7 @@ def home():
         'endpoints': {
             'POST /submit': 'Store face embedding',
             'POST /search': 'Search similar faces',
+            'POST /match': 'Match two faces',
             'POST /delete-album': 'Delete specific album',
             'POST /delete-file': 'Delete specific file by ID',
             'GET /clean': 'Delete expired folders',
@@ -241,9 +326,9 @@ def delete_file():
             with open(file_path, 'rb') as f:
                 album_data = pickle.load(f)
             
-            # Find and remove the specific ID
+            # Find and remove all faces with this ID (including sub-faces)
             original_count = len(album_data)
-            album_data = [item for item in album_data if item['id'] != file_id]
+            album_data = [item for item in album_data if not item['id'].startswith(file_id)]
             
             if len(album_data) < original_count:
                 # Save updated album
