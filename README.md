@@ -40,7 +40,7 @@ Update the `auth_key` in `.env` file before starting the server.
 Server status and available endpoints.
 
 ### POST /submit
-Store face embedding (requires auth):
+Store all face embeddings from image (requires auth):
 ```json
 {
   "id": "unique_id",
@@ -55,7 +55,7 @@ Response:
 {
   "status": "done",
   "id": "unique_id",
-  "total_faces": 1
+  "total_faces": 5
 }
 ```
 
@@ -64,10 +64,10 @@ Status values:
 - `noface` - No face detected in image
 - `error` - Processing error occurred
 
-`total_faces` indicates number of faces detected in the submitted image.
+`total_faces` indicates number of faces detected and stored from the submitted image. For group photos, all faces are automatically indexed with sub-IDs (e.g., `unique_id_face1`, `unique_id_face2`).
 
 ### POST /search
-Search similar faces (requires auth):
+Search similar faces using all faces in query image (requires auth):
 ```json
 {
   "image_url": "https://example.com/query.jpg",
@@ -84,9 +84,32 @@ Response:
     {
       "image_url": "https://example.com/image1.jpg",
       "similarity": 0.85,
-      "id": "person1"
+      "id": "person1_face2",
+      "original_id": "person1"
     }
   ]
+}
+```
+
+The search compares all faces in the query image against all stored faces in the album. Returns original photo IDs in `matches` array for database compatibility.
+
+### POST /match
+Match selfie face with all faces in photo (requires auth):
+```json
+{
+  "photo": "https://example.com/group-photo.jpg",
+  "selfie": "https://example.com/selfie.jpg"
+}
+```
+
+Response:
+```json
+{
+  "match": true,
+  "similarity": 0.65,
+  "threshold": 0.4,
+  "photo_faces": 10,
+  "selfie_faces": 1
 }
 ```
 

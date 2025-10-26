@@ -1,0 +1,2 @@
+2025-10-26 15:11:38 IST - Request: POST /match - Payload: {'photo': 'http://wedding-quotation-maker.test/storage/test-matching/photo.jpg', 'selfie': 'http://wedding-quotation-maker.test/storage/test-matching/selfie.jpg'}
+2025-10-26 15:12:12 IST - Request: POST /match - Payload: {'photo': 'http://wedding-quotation-maker.test/storage/test-matching/photo.jpg', 'selfie': 'http://wedding-quotation-maker.test/storage/test-matching/selfie.jpg'}
