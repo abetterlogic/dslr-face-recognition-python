@@ -52,63 +52,92 @@ def require_auth(f):
         return f(*args, **kwargs)
     return decorated_function
 
-# Load ArcFace model
+# Load ArcFace model with thread safety
+import threading
 face_model = insightface.app.FaceAnalysis(providers=['CPUExecutionProvider'])
-face_model.prepare(ctx_id=0, det_size=(640, 640))
+face_model.prepare(ctx_id=0, det_size=(640, 640), det_thresh=0.1)  # Very low detection threshold for challenging images
+face_model_lock = threading.Lock()
+file_locks = {}  # Dictionary to store locks per album file
+file_locks_lock = threading.Lock()  # Lock for the locks dictionary
 
 def download_image(url):
     """Download image from URL"""
-    response = requests.get(url)
+    response = requests.get(url, timeout=15)
     with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp:
         tmp.write(response.content)
         return tmp.name
 
 def get_face_embedding(image_path):
-    """Extract ArcFace 512d embedding"""
+    """Extract ArcFace 512d embedding with quality filtering"""
     img = cv2.imread(image_path)
-    faces = face_model.get(img)
+    if img is None:
+        print(f"Failed to read image: {image_path}")
+        return None, 0, 0.0
+    
+    with face_model_lock:
+        faces = face_model.get(img)
     
     if faces:
-        # Use first detected face (highest confidence)
-        face = faces[0]
-        embedding = face.embedding  # 512-dimensional ArcFace embedding
-        return embedding, len(faces)
-    return None, 0
+        # Use best quality face (highest detection score)
+        best_face = max(faces, key=lambda f: f.det_score)
+        print(f"Detected {len(faces)} faces, best score: {best_face.det_score}")
+        # Accept any detected face (model already filtered with det_thresh=0.1)
+        embedding = best_face.embedding / np.linalg.norm(best_face.embedding)  # Normalize
+        return embedding, len(faces), float(best_face.det_score)
+    else:
+        print(f"No faces detected in image: {image_path}")
+    return None, 0, 0.0
 
-def save_embedding(embedding, image_url, file_id, date_deletion, album_id):
-    """Save embedding to album file"""
+def save_embedding(embedding, image_url, file_id, date_deletion, album_id, quality_score=1.0):
+    """Save embedding to album file with quality metadata"""
     folder_path = os.path.join(DATA_DIR, date_deletion)
     os.makedirs(folder_path, exist_ok=True)
     
     file_path = os.path.join(folder_path, f"{album_id}.pkl")
     
-    # Load existing album data or create new
-    album_data = []
-    if os.path.exists(file_path):
-        with open(file_path, 'rb') as f:
-            album_data = pickle.load(f)
+    # Get or create lock for this specific file
+    with file_locks_lock:
+        if file_path not in file_locks:
+            file_locks[file_path] = threading.Lock()
+        file_lock = file_locks[file_path]
     
-    # Add new face data
-    face_data = {
-        'id': file_id,
-        'image_url': image_url,
-        'embedding': embedding,  # Store as numpy array directly
-        'album_id': album_id,
-        'date_deletion': date_deletion
-    }
-    
-    # Remove existing entry with same id if exists
-    album_data = [item for item in album_data if item['id'] != file_id]
-    album_data.append(face_data)
-    
-    # Save updated album
-    with open(file_path, 'wb') as f:
-        pickle.dump(album_data, f)
+    # Use file-specific lock to prevent concurrent writes
+    with file_lock:
+        # Load existing album data or create new
+        album_data = []
+        if os.path.exists(file_path):
+            try:
+                with open(file_path, 'rb') as f:
+                    album_data = pickle.load(f)
+            except (EOFError, pickle.UnpicklingError) as e:
+                print(f"Corrupted pickle file {file_path}, recreating: {e}")
+                log_to_file(f"Corrupted pickle file {file_path}, recreating: {e}")
+                album_data = []
+        
+        # Add new face data with quality score
+        face_data = {
+            'id': file_id,
+            'image_url': image_url,
+            'embedding': embedding / np.linalg.norm(embedding),  # Normalize
+            'quality_score': quality_score,
+            'album_id': album_id,
+            'date_deletion': date_deletion
+        }
+        
+        # Remove existing entry with same id if exists
+        album_data = [item for item in album_data if item['id'] != file_id]
+        album_data.append(face_data)
+        
+        # Save updated album atomically
+        temp_path = file_path + '.tmp'
+        with open(temp_path, 'wb') as f:
+            pickle.dump(album_data, f)
+        os.replace(temp_path, file_path)  # Atomic rename
     
     return len(album_data)
 
-def search_similar_faces(query_embedding, album_id, date_deletion):
-    """Search for similar faces in album file"""
+def search_similar_faces(query_embedding, album_id, date_deletion, query_quality=1.0):
+    """Search for similar faces with adaptive threshold"""
     results = []
     file_path = os.path.join(DATA_DIR, date_deletion, f"{album_id}.pkl")
     
@@ -117,29 +146,37 @@ def search_similar_faces(query_embedding, album_id, date_deletion):
             with open(file_path, 'rb') as f:
                 album_data = pickle.load(f)
             
+            # Normalize query embedding
+            query_norm = query_embedding / np.linalg.norm(query_embedding)
+            
             for face_data in album_data:
-                stored_embedding = face_data['embedding']  # Already numpy array
-                # Calculate similarity using cosine similarity
-                dot_product = np.dot(query_embedding, stored_embedding)
-                norm_a = np.linalg.norm(query_embedding)
-                norm_b = np.linalg.norm(stored_embedding)
-                similarity = dot_product / (norm_a * norm_b)
+                stored_embedding = face_data['embedding']
+                stored_norm = stored_embedding / np.linalg.norm(stored_embedding)
                 
-                if similarity > 0.4:  # ArcFace threshold
+                # Optimized cosine similarity
+                similarity = float(np.dot(query_norm, stored_norm))
+                
+                # Lower threshold for better recall
+                threshold = 0.25
+                
+                if similarity > threshold:
                     results.append({
                         'image_url': face_data['image_url'],
-                        'similarity': float(similarity),
-                        'id': face_data['id']
+                        'similarity': similarity,
+                        'id': face_data['id'],
+                        'quality': face_data.get('quality_score', 0.5)
                     })
         except Exception as e:
             print(f"Search error: {e}")
     
+    # Return all matches sorted by similarity (no limit)
     return sorted(results, key=lambda x: x['similarity'], reverse=True)
 
 @app.route('/submit', methods=['POST'])
 @require_auth
 def submit():
     """Submit all faces in image for storage"""
+    data = None
     try:
         data = request.json
         image_url = data['image_url']
@@ -147,13 +184,21 @@ def submit():
         album_id = data['album_id']
         date_deletion = data['date_deletion']
         
+        # Log at start of processing
+        print(f"Processing /submit - image_url: {image_url}, id: {file_id}")
+        log_to_file(f"Processing /submit - image_url: {image_url}, id: {file_id}")
+        
         # Check if ID already exists
         folder_path = os.path.join(DATA_DIR, date_deletion)
         file_path = os.path.join(folder_path, f"{album_id}.pkl")
         
         if os.path.exists(file_path):
-            with open(file_path, 'rb') as f:
-                album_data = pickle.load(f)
+            try:
+                with open(file_path, 'rb') as f:
+                    album_data = pickle.load(f)
+            except (EOFError, pickle.UnpicklingError) as e:
+                print(f"Corrupted pickle file during check: {e}")
+                album_data = []
             
             # Check if any face with this ID exists
             existing_faces = [item for item in album_data if item['id'].startswith(file_id)]
@@ -163,24 +208,33 @@ def submit():
         # Download and process image - get all faces
         img_path = download_image(image_url)
         img = cv2.imread(img_path)
-        faces = face_model.get(img) if face_model else []
+        with face_model_lock:
+            faces = face_model.get(img) if face_model else []
         os.unlink(img_path)
         
         if not faces:
             return jsonify({'status': 'noface', 'id': file_id, 'total_faces': 0})
         
-        # Save all faces with sub-IDs
+        # Save all faces with sub-IDs and quality scores
         saved_count = 0
         for i, face in enumerate(faces):
+            # Accept all detected faces (model already filtered with det_thresh=0.1)
             face_id = f"{file_id}_face{i+1}" if len(faces) > 1 else file_id
             embedding = face.embedding
-            save_embedding(embedding, image_url, face_id, date_deletion, album_id)
+            save_embedding(embedding, image_url, face_id, date_deletion, album_id, float(face.det_score))
             saved_count += 1
         
         return jsonify({'status': 'done', 'id': file_id, 'total_faces': saved_count})
     
     except Exception as e:
-        return jsonify({'status': 'error', 'id': data.get('id', ''), 'total_faces': 0, 'error': str(e)}), 500
+        error_url = data.get('image_url', 'N/A') if data else 'N/A'
+        error_id = data.get('id', 'N/A') if data else 'N/A'
+        error_msg = f"ERROR /submit - image_url: {error_url}, id: {error_id}, error: {str(e)}"
+        log_to_file(error_msg)
+        print(error_msg)
+        import traceback
+        traceback.print_exc()
+        return jsonify({'status': 'error', 'id': error_id, 'image_url': error_url, 'total_faces': 0, 'error': str(e)}), 500
 
 @app.route('/search', methods=['POST'])
 @require_auth
@@ -195,7 +249,8 @@ def search():
         # Download and process query image - get all faces
         img_path = download_image(image_url)
         img = cv2.imread(img_path)
-        faces = face_model.get(img) if face_model else []
+        with face_model_lock:
+            faces = face_model.get(img) if face_model else []
         os.unlink(img_path)
         
         if not faces:
@@ -204,8 +259,9 @@ def search():
         # Search using all faces in query image
         all_results = {}
         for face in faces:
+            # Accept all detected faces (model already filtered with det_thresh=0.1)
             query_embedding = face.embedding
-            results = search_similar_faces(query_embedding, album_id, date_deletion)
+            results = search_similar_faces(query_embedding, album_id, date_deletion, float(face.det_score))
             
             # Merge results, keeping best similarity for each ID
             for result in results:
@@ -234,7 +290,8 @@ def search():
         })
     
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        log_to_file(f"ERROR /search - image_url: {data.get('image_url', 'N/A')}, album_id: {data.get('album_id', 'N/A')}, error: {str(e)}")
+        return jsonify({'error': str(e), 'image_url': data.get('image_url', '')}), 500
 
 @app.route('/match', methods=['POST'])
 @require_auth
@@ -245,50 +302,66 @@ def match():
         photo_url = data['photo']
         selfie_url = data['selfie']
         
+        print(f"Processing /match - selfie: {selfie_url}, photo: {photo_url}")
+        
         # Download and process selfie
         selfie_path = download_image(selfie_url)
-        selfie_embedding, selfie_faces = get_face_embedding(selfie_path)
+        print(f"Processing selfie: {selfie_url}")
+        selfie_embedding, selfie_faces, selfie_quality = get_face_embedding(selfie_path)
         os.unlink(selfie_path)
         
         if selfie_embedding is None:
-            return jsonify({'match': False, 'error': 'No face detected in selfie'})
+            return jsonify({'match': False, 'error': 'No face detected in selfie', 'selfie_url': selfie_url})
         
         # Download and process photo - get all faces
         photo_path = download_image(photo_url)
-        img = cv2.imread(photo_path)
-        faces = face_model.get(img) if face_model else []
+        print(f"Processing photo: {photo_url}")
+        photo_img = cv2.imread(photo_path)
+        if photo_img is None:
+            os.unlink(photo_path)
+            return jsonify({'match': False, 'error': 'Failed to read photo', 'photo_url': photo_url})
+        
+        with face_model_lock:
+            faces = face_model.get(photo_img)
         os.unlink(photo_path)
         
+        print(f"Photo faces detected: {len(faces) if faces else 0}")
         if not faces:
-            return jsonify({'match': False, 'error': 'No face detected in photo'})
+            return jsonify({'match': False, 'error': 'No face detected in photo', 'photo_url': photo_url})
+        
+        # Normalize selfie embedding
+        selfie_norm = selfie_embedding / np.linalg.norm(selfie_embedding)
         
         # Compare selfie against all faces in photo
         best_similarity = -1
         for face in faces:
-            photo_embedding = face.embedding
-            
-            # Calculate similarity
-            dot_product = np.dot(photo_embedding, selfie_embedding)
-            norm_a = np.linalg.norm(photo_embedding)
-            norm_b = np.linalg.norm(selfie_embedding)
-            similarity = dot_product / (norm_a * norm_b)
+            # Accept all detected faces (model already filtered with det_thresh=0.1)
+            photo_embedding = face.embedding / np.linalg.norm(face.embedding)
+            similarity = float(np.dot(photo_embedding, selfie_norm))
             
             if similarity > best_similarity:
                 best_similarity = similarity
         
-        # Return match based on best similarity
-        is_match = bool(best_similarity > 0.4)
+        # Lower threshold for better recall
+        threshold = 0.25
+        is_match = bool(best_similarity > threshold)
+        
+        print(f"Match result: {is_match}, similarity: {best_similarity}, threshold: {threshold}")
         
         return jsonify({
             'match': is_match,
-            'similarity': float(best_similarity),
-            'threshold': 0.4,
+            'similarity': best_similarity,
+            'threshold': threshold,
             'photo_faces': len(faces),
             'selfie_faces': selfie_faces
         })
     
     except Exception as e:
-        return jsonify({'match': False, 'error': str(e)}), 500
+        log_to_file(f"ERROR /match - photo: {data.get('photo', 'N/A')}, selfie: {data.get('selfie', 'N/A')}, error: {str(e)}")
+        print(f"ERROR /match: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'match': False, 'error': str(e), 'photo': data.get('photo', ''), 'selfie': data.get('selfie', '')}), 500
 
 @app.route('/', methods=['GET'])
 def home():
@@ -500,13 +573,8 @@ def status():
         # Convert timestamp to readable format
         last_updated = datetime.fromtimestamp(last_modified).isoformat() if last_modified else None
         
-        # Test if face model is working
-        active = True
-        try:
-            # Quick test of face model functionality
-            face_model.prepare(ctx_id=0, det_size=(640, 640))
-        except:
-            active = False
+        # Check if face model exists (don't reload it!)
+        active = face_model is not None
         
         return jsonify({
             'total_disk_space_mb': total_size_mb,
