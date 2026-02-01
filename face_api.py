@@ -156,8 +156,8 @@ def search_similar_faces(query_embedding, album_id, date_deletion, query_quality
                 # Optimized cosine similarity
                 similarity = float(np.dot(query_norm, stored_norm))
                 
-                # Lower threshold for better recall
-                threshold = 0.25
+                # Threshold for high confidence matches
+                threshold = 0.60
                 
                 if similarity > threshold:
                     results.append({
@@ -342,8 +342,8 @@ def match():
             if similarity > best_similarity:
                 best_similarity = similarity
         
-        # Lower threshold for better recall
-        threshold = 0.25
+        # Threshold for high confidence matches
+        threshold = 0.60
         is_match = bool(best_similarity > threshold)
         
         print(f"Match result: {is_match}, similarity: {best_similarity}, threshold: {threshold}")
