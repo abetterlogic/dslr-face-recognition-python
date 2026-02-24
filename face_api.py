@@ -55,7 +55,7 @@ def require_auth(f):
 # Load ArcFace model with thread safety
 import threading
 face_model = insightface.app.FaceAnalysis(providers=['CPUExecutionProvider'])
-face_model.prepare(ctx_id=0, det_size=(640, 640), det_thresh=0.1)  # Very low detection threshold for challenging images
+face_model.prepare(ctx_id=0, det_size=(480, 480), det_thresh=0.1)  # Optimized detection size for CPU efficiency
 face_model_lock = threading.Lock()
 file_locks = {}  # Dictionary to store locks per album file
 file_locks_lock = threading.Lock()  # Lock for the locks dictionary
