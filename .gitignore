@@ -1,4 +1,6 @@
 data/
+logs/
+samples/
 *.pyc
 __pycache__/
 .env

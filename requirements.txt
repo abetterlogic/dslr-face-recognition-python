@@ -2,8 +2,6 @@ flask
 opencv-python
 numpy
 requests
-pillow
-scikit-learn
 python-dotenv
 insightface
 onnxruntime

@@ -1,5 +1,5 @@
 import os
-import pickle
+import sqlite3
 import numpy as np
 from datetime import datetime, date, timedelta
 from flask import Flask, request, jsonify
@@ -55,10 +55,26 @@ def require_auth(f):
 # Load ArcFace model with thread safety
 import threading
 face_model = insightface.app.FaceAnalysis(providers=['CPUExecutionProvider'])
-face_model.prepare(ctx_id=0, det_size=(480, 480), det_thresh=0.1)  # Optimized detection size for CPU efficiency
+face_model.prepare(ctx_id=0, det_size=(480, 480), det_thresh=0.5)  # Higher threshold to reject tiny/low-quality faces
 face_model_lock = threading.Lock()
-file_locks = {}  # Dictionary to store locks per album file
-file_locks_lock = threading.Lock()  # Lock for the locks dictionary
+
+def get_db_connection(album_id, date_deletion):
+    """Get SQLite connection for album database"""
+    folder_path = os.path.join(DATA_DIR, date_deletion)
+    os.makedirs(folder_path, exist_ok=True)
+    db_path = os.path.join(folder_path, f"{album_id}.db")
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    conn.execute('PRAGMA journal_mode=WAL')  # Enable WAL mode for concurrent access
+    conn.execute('''CREATE TABLE IF NOT EXISTS faces (
+        id TEXT PRIMARY KEY,
+        image_url TEXT NOT NULL,
+        embedding BLOB NOT NULL,
+        quality_score REAL,
+        album_id TEXT,
+        date_deletion TEXT
+    )''')
+    conn.commit()
+    return conn
 
 def download_image(url):
     """Download image from URL"""
@@ -89,87 +105,66 @@ def get_face_embedding(image_path):
     return None, 0, 0.0
 
 def save_embedding(embedding, image_url, file_id, date_deletion, album_id, quality_score=1.0):
-    """Save embedding to album file with quality metadata"""
-    folder_path = os.path.join(DATA_DIR, date_deletion)
-    os.makedirs(folder_path, exist_ok=True)
-    
-    file_path = os.path.join(folder_path, f"{album_id}.pkl")
-    
-    # Get or create lock for this specific file
-    with file_locks_lock:
-        if file_path not in file_locks:
-            file_locks[file_path] = threading.Lock()
-        file_lock = file_locks[file_path]
-    
-    # Use file-specific lock to prevent concurrent writes
-    with file_lock:
-        # Load existing album data or create new
-        album_data = []
-        if os.path.exists(file_path):
-            try:
-                with open(file_path, 'rb') as f:
-                    album_data = pickle.load(f)
-            except (EOFError, pickle.UnpicklingError) as e:
-                print(f"Corrupted pickle file {file_path}, recreating: {e}")
-                log_to_file(f"Corrupted pickle file {file_path}, recreating: {e}")
-                album_data = []
+    """Save embedding to album database with quality metadata"""
+    conn = get_db_connection(album_id, date_deletion)
+    try:
+        # Normalize embedding
+        normalized_embedding = embedding / np.linalg.norm(embedding)
+        embedding_blob = normalized_embedding.tobytes()
         
-        # Add new face data with quality score
-        face_data = {
-            'id': file_id,
-            'image_url': image_url,
-            'embedding': embedding / np.linalg.norm(embedding),  # Normalize
-            'quality_score': quality_score,
-            'album_id': album_id,
-            'date_deletion': date_deletion
-        }
+        # Insert or replace face data
+        conn.execute('''INSERT OR REPLACE INTO faces 
+                       (id, image_url, embedding, quality_score, album_id, date_deletion)
+                       VALUES (?, ?, ?, ?, ?, ?)''',
+                    (file_id, image_url, embedding_blob, quality_score, album_id, date_deletion))
+        conn.commit()
         
-        # Remove existing entry with same id if exists
-        album_data = [item for item in album_data if item['id'] != file_id]
-        album_data.append(face_data)
-        
-        # Save updated album atomically
-        temp_path = file_path + '.tmp'
-        with open(temp_path, 'wb') as f:
-            pickle.dump(album_data, f)
-        os.replace(temp_path, file_path)  # Atomic rename
-    
-    return len(album_data)
+        # Get total count
+        cursor = conn.execute('SELECT COUNT(*) FROM faces')
+        total_count = cursor.fetchone()[0]
+        return total_count
+    finally:
+        conn.close()
 
 def search_similar_faces(query_embedding, album_id, date_deletion, query_quality=1.0):
     """Search for similar faces with adaptive threshold"""
     results = []
-    file_path = os.path.join(DATA_DIR, date_deletion, f"{album_id}.pkl")
+    db_path = os.path.join(DATA_DIR, date_deletion, f"{album_id}.db")
     
-    if os.path.exists(file_path):
+    if os.path.exists(db_path):
+        conn = get_db_connection(album_id, date_deletion)
         try:
-            with open(file_path, 'rb') as f:
-                album_data = pickle.load(f)
-            
             # Normalize query embedding
             query_norm = query_embedding / np.linalg.norm(query_embedding)
             
-            for face_data in album_data:
-                stored_embedding = face_data['embedding']
+            # Fetch all faces from database
+            cursor = conn.execute('SELECT id, image_url, embedding, quality_score FROM faces')
+            
+            threshold = 0.60
+            
+            for row in cursor:
+                face_id, image_url, embedding_blob, quality_score = row
+                
+                # Convert blob back to numpy array
+                stored_embedding = np.frombuffer(embedding_blob, dtype=np.float32)
                 stored_norm = stored_embedding / np.linalg.norm(stored_embedding)
                 
-                # Optimized cosine similarity
+                # Cosine similarity
                 similarity = float(np.dot(query_norm, stored_norm))
-                
-                # Threshold for high confidence matches
-                threshold = 0.60
                 
                 if similarity > threshold:
                     results.append({
-                        'image_url': face_data['image_url'],
+                        'image_url': image_url,
                         'similarity': similarity,
-                        'id': face_data['id'],
-                        'quality': face_data.get('quality_score', 0.5)
+                        'id': face_id,
+                        'quality': quality_score if quality_score else 0.5
                     })
         except Exception as e:
             print(f"Search error: {e}")
+        finally:
+            conn.close()
     
-    # Return all matches sorted by similarity (no limit)
+    # Return all matches sorted by similarity
     return sorted(results, key=lambda x: x['similarity'], reverse=True)
 
 @app.route('/submit', methods=['POST'])
@@ -189,21 +184,17 @@ def submit():
         log_to_file(f"Processing /submit - image_url: {image_url}, id: {file_id}")
         
         # Check if ID already exists
-        folder_path = os.path.join(DATA_DIR, date_deletion)
-        file_path = os.path.join(folder_path, f"{album_id}.pkl")
+        db_path = os.path.join(DATA_DIR, date_deletion, f"{album_id}.db")
         
-        if os.path.exists(file_path):
+        if os.path.exists(db_path):
+            conn = get_db_connection(album_id, date_deletion)
             try:
-                with open(file_path, 'rb') as f:
-                    album_data = pickle.load(f)
-            except (EOFError, pickle.UnpicklingError) as e:
-                print(f"Corrupted pickle file during check: {e}")
-                album_data = []
-            
-            # Check if any face with this ID exists
-            existing_faces = [item for item in album_data if item['id'].startswith(file_id)]
-            if existing_faces:
-                return jsonify({'status': 'done', 'id': file_id, 'total_faces': len(existing_faces)})
+                cursor = conn.execute("SELECT COUNT(*) FROM faces WHERE id LIKE ?", (f"{file_id}%",))
+                existing_count = cursor.fetchone()[0]
+                if existing_count > 0:
+                    return jsonify({'status': 'done', 'id': file_id, 'total_faces': existing_count})
+            finally:
+                conn.close()
         
         # Download and process image - get all faces
         img_path = download_image(image_url)
@@ -218,7 +209,10 @@ def submit():
         # Save all faces with sub-IDs and quality scores
         saved_count = 0
         for i, face in enumerate(faces):
-            # Accept all detected faces (model already filtered with det_thresh=0.1)
+            # Only save faces with good quality (det_score > 0.3)
+            if face.det_score < 0.3:
+                print(f"Skipping low quality face: det_score={face.det_score}")
+                continue
             face_id = f"{file_id}_face{i+1}" if len(faces) > 1 else file_id
             embedding = face.embedding
             save_embedding(embedding, image_url, face_id, date_deletion, album_id, float(face.det_score))
@@ -277,12 +271,15 @@ def search():
         final_results = sorted(all_results.values(), key=lambda x: x['similarity'], reverse=True)
         
         # Debug info
-        file_path = os.path.join(DATA_DIR, date_deletion, f"{album_id}.pkl")
+        db_path = os.path.join(DATA_DIR, date_deletion, f"{album_id}.db")
         stored_faces_count = 0
-        if os.path.exists(file_path):
-            with open(file_path, 'rb') as f:
-                album_data = pickle.load(f)
-            stored_faces_count = len(album_data)
+        if os.path.exists(db_path):
+            conn = get_db_connection(album_id, date_deletion)
+            try:
+                cursor = conn.execute('SELECT COUNT(*) FROM faces')
+                stored_faces_count = cursor.fetchone()[0]
+            finally:
+                conn.close()
         
         return jsonify({
             'matches': [r['original_id'] for r in final_results],
@@ -343,7 +340,7 @@ def match():
                 best_similarity = similarity
         
         # Threshold for high confidence matches
-        threshold = 0.60
+        threshold = 0.70
         is_match = bool(best_similarity > threshold)
         
         print(f"Match result: {is_match}, similarity: {best_similarity}, threshold: {threshold}")
@@ -393,35 +390,37 @@ def delete_file():
         file_id = data['id']
         date_deletion = data['date_deletion']
         
-        file_path = os.path.join(DATA_DIR, date_deletion, f"{album_id}.pkl")
+        db_path = os.path.join(DATA_DIR, date_deletion, f"{album_id}.db")
         
-        if os.path.exists(file_path):
-            with open(file_path, 'rb') as f:
-                album_data = pickle.load(f)
-            
-            # Find and remove all faces with this ID (including sub-faces)
-            original_count = len(album_data)
-            album_data = [item for item in album_data if not item['id'].startswith(file_id)]
-            
-            if len(album_data) < original_count:
-                # Save updated album
-                with open(file_path, 'wb') as f:
-                    pickle.dump(album_data, f)
+        if os.path.exists(db_path):
+            conn = get_db_connection(album_id, date_deletion)
+            try:
+                # Delete all faces with this ID (including sub-faces)
+                cursor = conn.execute("DELETE FROM faces WHERE id LIKE ?", (f"{file_id}%",))
+                deleted_count = cursor.rowcount
+                conn.commit()
                 
-                return jsonify({
-                    'status': 'success',
-                    'message': f'File {file_id} deleted from album {album_id}',
-                    'id': file_id,
-                    'album_id': album_id,
-                    'remaining_files': len(album_data)
-                })
-            else:
-                return jsonify({
-                    'status': 'not_found',
-                    'message': 'File ID not found in album',
-                    'id': file_id,
-                    'album_id': album_id
-                })
+                if deleted_count > 0:
+                    # Get remaining count
+                    cursor = conn.execute('SELECT COUNT(*) FROM faces')
+                    remaining_count = cursor.fetchone()[0]
+                    
+                    return jsonify({
+                        'status': 'success',
+                        'message': f'File {file_id} deleted from album {album_id}',
+                        'id': file_id,
+                        'album_id': album_id,
+                        'remaining_files': remaining_count
+                    })
+                else:
+                    return jsonify({
+                        'status': 'not_found',
+                        'message': 'File ID not found in album',
+                        'id': file_id,
+                        'album_id': album_id
+                    })
+            finally:
+                conn.close()
         else:
             return jsonify({
                 'status': 'not_found',
@@ -441,10 +440,15 @@ def delete_album():
         album_id = data['album_id']
         date_deletion = data['date_deletion']
         
-        file_path = os.path.join(DATA_DIR, date_deletion, f"{album_id}.pkl")
+        db_path = os.path.join(DATA_DIR, date_deletion, f"{album_id}.db")
         
-        if os.path.exists(file_path):
-            os.remove(file_path)
+        if os.path.exists(db_path):
+            os.remove(db_path)
+            # Also remove WAL and SHM files if they exist
+            for ext in ['-wal', '-shm']:
+                wal_file = db_path + ext
+                if os.path.exists(wal_file):
+                    os.remove(wal_file)
             return jsonify({
                 'status': 'success',
                 'message': f'Album {album_id} deleted',
@@ -519,24 +523,22 @@ def status_album():
         album_id = data['album_id']
         date_deletion = data['date_deletion']
         
-        file_path = os.path.join(DATA_DIR, date_deletion, f"{album_id}.pkl")
+        db_path = os.path.join(DATA_DIR, date_deletion, f"{album_id}.db")
         
-        if os.path.exists(file_path):
-            with open(file_path, 'rb') as f:
-                album_data = pickle.load(f)
-            
-            # Extract id and filepath (image_url) for each entry
-            files = [{
-                'id': item['id'],
-                'filepath': item['image_url']
-            } for item in album_data]
-            
-            return jsonify({
-                'album_id': album_id,
-                'date_deletion': date_deletion,
-                'total_files': len(files),
-                'files': files
-            })
+        if os.path.exists(db_path):
+            conn = get_db_connection(album_id, date_deletion)
+            try:
+                cursor = conn.execute('SELECT id, image_url FROM faces')
+                files = [{'id': row[0], 'filepath': row[1]} for row in cursor]
+                
+                return jsonify({
+                    'album_id': album_id,
+                    'date_deletion': date_deletion,
+                    'total_files': len(files),
+                    'files': files
+                })
+            finally:
+                conn.close()
         else:
             return jsonify({
                 'status': 'not_found',
