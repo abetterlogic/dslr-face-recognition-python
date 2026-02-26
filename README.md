@@ -9,6 +9,8 @@ python3 -m pip install -r requirements.txt
 python3 face_api.py
 ```
 
+/www/wwwroot/dslr-selfiesearch-python/af6e46fea22026e09b2518cefff15de3_venv/bin/python3 -m pip install -r /www/wwwroot/dslr-selfiesearch-python/requirements.txt
+
 Server runs on configurable port (default: 8080)
 
 ## Configuration
