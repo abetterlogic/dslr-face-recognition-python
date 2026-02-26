@@ -1,6 +1,6 @@
 # Face Recognition API
 
-Minimal ArcFace 512-d based face recognition system optimized for 2 CPU 8GB RAM.
+ArcFace 512-d based face recognition system using Upstash Vector for storage.
 
 ## Setup
 
@@ -9,37 +9,60 @@ python3 -m pip install -r requirements.txt
 python3 face_api.py
 ```
 
+## VENV ON SERVER 
 /www/wwwroot/dslr-selfiesearch-python/af6e46fea22026e09b2518cefff15de3_venv/bin/python3 -m pip install -r /www/wwwroot/dslr-selfiesearch-python/requirements.txt
-
-Server runs on configurable port (default: 8080)
 
 ## Configuration
 
-Create a `.env` file with the following structure:
+Create a `.env` file:
 ```
 auth_key=your_secret_auth_key_here
 port=8080
 debug=true
+
+# Upstash Vector
+upstash_url=your_upstash_url
+upstash_token=your_upstash_token
+
+# Face Detection Settings
+similarity_threshold=0.70
+det_thresh=0.5
+det_quality_min=0.3
+det_size=480
 ```
 
-- `auth_key` - Bearer token for API authentication
-- `port` - Server port (default: 8080)
-- `debug` - Enable/disable debug mode (true/false)
+| Key | Description | Default |
+|-----|-------------|---------|
+| `auth_key` | Bearer token for API authentication | required |
+| `port` | Server port | 8080 |
+| `debug` | Enable daily log files | false |
+| `upstash_url` | Upstash Vector index URL | required |
+| `upstash_token` | Upstash Vector token | required |
+| `similarity_threshold` | Min cosine similarity for search/match | 0.70 |
+| `det_thresh` | Min confidence to detect a face | 0.5 |
+| `det_quality_min` | Min det_score to save a face | 0.3 |
+| `det_size` | Detection resolution (affects CPU, not embedding quality) | 480 |
 
 ## Authentication
 
-All API endpoints (except `/` and `/test`) require Bearer token authentication:
+All endpoints except `/`, `/test`, and `/detect-face` require Bearer token:
 
 ```
 Authorization: Bearer your_secret_auth_key_here
 ```
 
-Update the `auth_key` in `.env` file before starting the server.
-
 ## API Endpoints
 
-### GET /
-Server status and available endpoints.
+### GET /detect-face
+Visualize face detection on an image. Returns the image with rectangles drawn:
+- 🟢 Green = face will be saved (det_score ≥ det_quality_min)
+- 🔴 Red = face will be skipped (det_score < det_quality_min)
+
+```
+GET /detect-face?url=https://example.com/image.jpg
+```
+
+No authentication required. Useful for tuning detection settings.
 
 ### POST /submit
 Store all face embeddings from image (requires auth):
@@ -66,7 +89,7 @@ Status values:
 - `noface` - No face detected in image
 - `error` - Processing error occurred
 
-`total_faces` indicates number of faces detected and stored from the submitted image. For group photos, all faces are automatically indexed with sub-IDs (e.g., `unique_id_face1`, `unique_id_face2`).
+All faces from a group photo are batch-uploaded to Upstash in a single API call with sub-IDs (e.g., `unique_id_face1`, `unique_id_face2`).
 
 ### POST /search
 Search similar faces using all faces in query image (requires auth):
@@ -93,8 +116,6 @@ Response:
 }
 ```
 
-The search compares all faces in the query image against all stored faces in the album. Returns original photo IDs in `matches` array for database compatibility.
-
 ### POST /match
 Match selfie face with all faces in photo (requires auth):
 ```json
@@ -108,15 +129,15 @@ Response:
 ```json
 {
   "match": true,
-  "similarity": 0.65,
-  "threshold": 0.4,
+  "similarity": 0.75,
+  "threshold": 0.70,
   "photo_faces": 10,
   "selfie_faces": 1
 }
 ```
 
 ### POST /delete-album
-Delete specific album (requires auth):
+Delete all vectors for a specific album (requires auth):
 ```json
 {
   "album_id": "album1",
@@ -128,64 +149,45 @@ Delete specific album (requires auth):
 Delete specific file by ID (requires auth):
 ```json
 {
-  "album_id": "1bb85b1c-84ac-4a3b-9811-35d798bc3bb0",
-  "id": "123",
-  "date_deletion": "2025-11-27"
+  "album_id": "album1",
+  "id": "unique_id",
+  "date_deletion": "2024-12-31"
 }
 ```
 
 ### GET /clean
-Delete expired folders and log files older than 3 days (requires auth).
+Delete expired vectors from Upstash and log files older than 3 days (requires auth).
 
 Response:
 ```json
 {
   "status": "success",
-  "deleted_folders": ["2024-01-10", "2024-01-11"],
-  "deleted_logs": ["2024-01-12.log"],
-  "count": 3
+  "deleted_vectors": 120,
+  "deleted_logs": ["2024-01-12.log"]
 }
 ```
 
 ### GET /status
-Data folder statistics:
-
-Response:
-```json
-{
-  "total_disk_space_mb": 15.67,
-  "total_disk_space_bytes": 16435200,
-  "last_updated": "2024-01-15T14:30:45.123456",
-  "data_folder_exists": true,
-  "is_debug": true,
-  "active": true
-}
-```
+Server status.
 
 ### POST /status-album
-Album file details (requires auth):
+List all files in an album (requires auth):
 ```json
 {
-  "album_id": "1bb85b1c-84ac-4a3b-9811-35d798bc3bb0",
-  "date_deletion": "2025-11-27"
+  "album_id": "album1",
+  "date_deletion": "2024-12-31"
 }
 ```
 
 Response:
 ```json
 {
-  "album_id": "1bb85b1c-84ac-4a3b-9811-35d798bc3bb0",
-  "date_deletion": "2025-11-27",
+  "album_id": "album1",
+  "date_deletion": "2024-12-31",
   "total_files": 2,
   "files": [
-    {
-      "id": "123",
-      "filepath": "https://example.com/image1.jpg"
-    },
-    {
-      "id": "456",
-      "filepath": "https://example.com/image2.jpg"
-    }
+    {"id": "123", "filepath": "https://example.com/image1.jpg"},
+    {"id": "456", "filepath": "https://example.com/image2.jpg"}
   ]
 }
 ```
@@ -193,24 +195,13 @@ Response:
 ### GET /test
 Health check endpoint.
 
-## File Structure
-```
-data/
-├── {date_deletion}/
-│   ├── {album_id}.pkl
-│   └── {album_id2}.pkl
-```
-
-Each .pkl file contains all face embeddings for that album. The `data/` folder is git-ignored.
-
 ## Logging
 
-When `debug=true` in `.env`, the API creates daily log files:
+When `debug=true`, daily log files are created:
 ```
 logs/
 ├── 2024-01-15.log
 ├── 2024-01-16.log
-└── 2024-01-17.log
 ```
 
-Log files use Asia/Kolkata timezone and are automatically cleaned up after 3 days via `/clean` endpoint.
+Log files use Asia/Kolkata timezone and are cleaned up after 3 days via `/clean`.
