@@ -2,7 +2,7 @@ import os
 import threading
 import numpy as np
 from datetime import datetime, date, timedelta
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 import requests
 import cv2
 import tempfile
@@ -24,11 +24,12 @@ LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
 # Upstash Vector
 upstash_index = Index(url=os.getenv('upstash_url'), token=os.getenv('upstash_token'))
 
-SIMILARITY_THRESHOLD = 0.70
+SIMILARITY_THRESHOLD = float(os.getenv('similarity_threshold', 0.70))
+DET_QUALITY_MIN = float(os.getenv('det_quality_min', 0.3))
 
 # ArcFace model
 face_model = insightface.app.FaceAnalysis(providers=['CPUExecutionProvider'])
-face_model.prepare(ctx_id=0, det_size=(480, 480), det_thresh=0.5)
+face_model.prepare(ctx_id=0, det_size=(int(os.getenv('det_size', 480)),) * 2, det_thresh=float(os.getenv('det_thresh', 0.5)))
 face_model_lock = threading.Lock()
 
 def log_to_file(message):
@@ -92,7 +93,7 @@ def submit():
         # Build vectors for all quality faces
         vectors = []
         for i, face in enumerate(faces):
-            if face.det_score < 0.3:
+            if face.det_score < DET_QUALITY_MIN:
                 continue
             face_id = f"{file_id}_face{i+1}" if len(faces) > 1 else file_id
             embedding = face.embedding / np.linalg.norm(face.embedding)
@@ -215,6 +216,33 @@ def match():
     except Exception as e:
         log_to_file(f"ERROR /match - error: {str(e)}")
         return jsonify({'match': False, 'error': str(e)}), 500
+
+@app.route('/detect-face', methods=['GET'])
+def detect_face():
+    try:
+        image_url = request.args.get('url')
+        if not image_url:
+            return jsonify({'error': 'url parameter required'}), 400
+
+        img_path = download_image(image_url)
+        img = cv2.imread(img_path)
+        with face_model_lock:
+            faces = face_model.get(img)
+        os.unlink(img_path)
+
+        for face in faces:
+            x1, y1, x2, y2 = [int(v) for v in face.bbox]
+            color = (0, 255, 0) if face.det_score >= DET_QUALITY_MIN else (0, 0, 255)
+            cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(img, f"{face.det_score:.2f}", (x1, y1 - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+        out = tempfile.NamedTemporaryFile(delete=False, suffix='.jpg')
+        cv2.imwrite(out.name, img)
+        return send_file(out.name, mimetype='image/jpeg')
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/delete-file', methods=['POST'])
 @require_auth
