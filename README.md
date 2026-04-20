@@ -1,5 +1,7 @@
 # Face Recognition API
 
+[![Runpod](https://api.runpod.io/badge/abetterlogic/dslr-face-recognition-python)](https://console.runpod.io/hub/abetterlogic/dslr-face-recognition-python)
+
 ArcFace 512-d based face recognition system using Upstash Vector for storage.
 
 ## Setup
