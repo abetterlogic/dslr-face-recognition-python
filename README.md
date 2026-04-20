@@ -42,6 +42,7 @@ det_size=480
 | `det_thresh` | Min confidence to detect a face | 0.5 |
 | `det_quality_min` | Min det_score to save a face | 0.3 |
 | `det_size` | Detection resolution (affects CPU, not embedding quality) | 480 |
+| `use_gpu` | Use CUDA GPU if available, false for CPU only | false |
 
 ## Authentication
 

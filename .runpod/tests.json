@@ -1,0 +1,70 @@
+{
+  "tests": [
+    {
+      "name": "test_submit",
+      "input": {
+        "id": "test_image_001",
+        "image_url": "https://example.com/group-photo.jpg",
+        "album_id": "test_album",
+        "date_deletion": "2026-12-31"
+      },
+      "timeout": 30000
+    },
+    {
+      "name": "test_search",
+      "input": {
+        "image_url": "https://example.com/query.jpg",
+        "album_id": "test_album",
+        "date_deletion": "2026-12-31"
+      },
+      "timeout": 30000
+    },
+    {
+      "name": "test_match",
+      "input": {
+        "photo": "https://example.com/group-photo.jpg",
+        "selfie": "https://example.com/selfie.jpg"
+      },
+      "timeout": 30000
+    }
+  ],
+  "config": {
+    "runsOn": "GPU",
+    "gpuTypeId": "NVIDIA GeForce RTX 4090",
+    "gpuCount": 1,
+    "env": [
+      {
+        "key": "use_gpu",
+        "value": "true"
+      },
+      {
+        "key": "auth_key",
+        "value": "test_auth_key"
+      },
+      {
+        "key": "upstash_url",
+        "value": "your_upstash_url"
+      },
+      {
+        "key": "upstash_token",
+        "value": "your_upstash_token"
+      },
+      {
+        "key": "similarity_threshold",
+        "value": "0.70"
+      },
+      {
+        "key": "det_thresh",
+        "value": "0.5"
+      },
+      {
+        "key": "det_quality_min",
+        "value": "0.3"
+      },
+      {
+        "key": "det_size",
+        "value": "480"
+      }
+    ]
+  }
+}

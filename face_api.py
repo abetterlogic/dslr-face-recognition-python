@@ -27,9 +27,11 @@ upstash_index = Index(url=os.getenv('upstash_url'), token=os.getenv('upstash_tok
 SIMILARITY_THRESHOLD = float(os.getenv('similarity_threshold', 0.70))
 DET_QUALITY_MIN = float(os.getenv('det_quality_min', 0.3))
 
-# ArcFace model
-face_model = insightface.app.FaceAnalysis(providers=['CPUExecutionProvider'])
-face_model.prepare(ctx_id=0, det_size=(int(os.getenv('det_size', 480)),) * 2, det_thresh=float(os.getenv('det_thresh', 0.5)))
+# ArcFace model - GPU or CPU based on .env
+USE_GPU = os.getenv('use_gpu', 'false').lower() == 'true'
+providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] if USE_GPU else ['CPUExecutionProvider']
+face_model = insightface.app.FaceAnalysis(providers=providers)
+face_model.prepare(ctx_id=0 if USE_GPU else -1, det_size=(int(os.getenv('det_size', 480)),) * 2, det_thresh=float(os.getenv('det_thresh', 0.5)))
 face_model_lock = threading.Lock()
 
 def log_to_file(message):

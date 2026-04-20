@@ -1,0 +1,103 @@
+{
+  "title": "DSLR Face Recognition API",
+  "description": "ArcFace 512-d based face recognition API with Upstash Vector storage. Supports face submission, similarity search, selfie matching, and face detection visualization.",
+  "type": "serverless",
+  "category": "image",
+  "iconUrl": "https://example.com/icon.png",
+  "config": {
+    "runsOn": "GPU",
+    "containerDiskInGb": 20,
+    "env": [
+      {
+        "key": "auth_key",
+        "input": {
+          "name": "Auth Key",
+          "type": "string",
+          "description": "Bearer token for API authentication",
+          "required": true
+        }
+      },
+      {
+        "key": "port",
+        "input": {
+          "name": "Port",
+          "type": "string",
+          "description": "Server port",
+          "default": "8080"
+        }
+      },
+      {
+        "key": "debug",
+        "input": {
+          "name": "Debug",
+          "type": "string",
+          "description": "Enable daily log files (true/false)",
+          "default": "false"
+        }
+      },
+      {
+        "key": "upstash_url",
+        "input": {
+          "name": "Upstash Vector URL",
+          "type": "string",
+          "description": "Upstash Vector index URL",
+          "required": true
+        }
+      },
+      {
+        "key": "upstash_token",
+        "input": {
+          "name": "Upstash Vector Token",
+          "type": "string",
+          "description": "Upstash Vector token",
+          "required": true
+        }
+      },
+      {
+        "key": "similarity_threshold",
+        "input": {
+          "name": "Similarity Threshold",
+          "type": "string",
+          "description": "Min cosine similarity for search/match (0.0 - 1.0)",
+          "default": "0.70"
+        }
+      },
+      {
+        "key": "det_thresh",
+        "input": {
+          "name": "Detection Threshold",
+          "type": "string",
+          "description": "Min confidence to detect a face (0.0 - 1.0)",
+          "default": "0.5"
+        }
+      },
+      {
+        "key": "det_quality_min",
+        "input": {
+          "name": "Detection Quality Min",
+          "type": "string",
+          "description": "Min det_score to save a face (0.0 - 1.0)",
+          "default": "0.3"
+        }
+      },
+      {
+        "key": "use_gpu",
+        "input": {
+          "name": "Use GPU",
+          "type": "string",
+          "description": "Set to true if server has CUDA GPU, false for CPU only",
+          "default": "true"
+        }
+      },
+      {
+        "key": "det_size",
+        "input": {
+          "name": "Detection Size",
+          "type": "string",
+          "description": "Detection resolution in pixels (affects CPU usage, not embedding quality)",
+          "default": "480"
+        }
+      }
+    ]
+  }
+}
