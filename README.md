@@ -40,7 +40,7 @@ det_size=480
 | `debug` | Enable daily log files | false |
 | `upstash_url` | Upstash Vector index URL | required |
 | `upstash_token` | Upstash Vector token | required |
-| `similarity_threshold` | Min cosine similarity for search/match | 0.70 |
+| `similarity_threshold` | Min similarity score using Upstash cosine formula: (1+cos)/2 | 0.80 |
 | `det_thresh` | Min confidence to detect a face | 0.5 |
 | `det_quality_min` | Min det_score to save a face | 0.3 |
 | `det_size` | Detection resolution (affects CPU, not embedding quality) | 480 |

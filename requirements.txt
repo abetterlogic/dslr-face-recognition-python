@@ -6,4 +6,3 @@ python-dotenv
 insightface
 onnxruntime
 pytz
-upstash-vector
